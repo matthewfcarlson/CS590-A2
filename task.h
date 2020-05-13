@@ -24,5 +24,6 @@ A2Task* GetNextReadyTaskFromList();
 void SleepFor(unsigned int ticks);
 void DisableTask();
 void EnableTask();
-
+TickType_t GetTicksUntilNextReadyTask();
+void PrintTask(A2Task* task);
 #endif
