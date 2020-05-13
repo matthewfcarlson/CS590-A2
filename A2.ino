@@ -2,17 +2,17 @@
 #include <CircularBuffer.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <WiFi.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_SSD1306.h>
-
+#include "config.h"
 
 #if CONFIG_FREERTOS_UNICORE
 #define ARDUINO_RUNNING_CORE 0
 #else
 #define ARDUINO_RUNNING_CORE 1
 #endif
-
 #define CONFIG_FREERTOS_UNICORE
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
@@ -45,6 +45,8 @@ void TaskUpdateStepCount( void *pvParameters );
 TaskHandle_t xTaskReadAccelHandle;
 TaskHandle_t xTaskUpdateStepCountHandle;
 TaskHandle_t xTaskReadBatteryHandle;
+TaskHandle_t xTaskUpdateDisplayHandle;
+TaskHandle_t xTaskWifiHandle;
 
 void setup() {
   // put your setup code here, to run once:
@@ -57,10 +59,6 @@ void setup() {
   Serial.println(portTICK_RATE_MS); // how many ms a tick is
   Serial.println(portTICK_PERIOD_MS);
   Serial.println(configTICK_RATE_HZ); // how many times a tick happens a second
-
-  //Create the semaphore
-  xSemaphore = xSemaphoreCreateBinary();
-  xSemaphoreGive(xSemaphore); // make sure to set it up as available
   Serial.print("TASK MAX");
   Serial.println(configMAX_PRIORITIES);
 
@@ -84,6 +82,15 @@ void setup() {
     Serial.println("Failed to start Gyro");
   }
 
+  // Wifi
+  WiFi.scanNetworks();
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Establishing connection to WiFi..");
+  }
+
   // Now set up tasks to run independently.
   xTaskCreatePinnedToCore(
     TaskReadBattery
@@ -94,11 +101,19 @@ void setup() {
     ,  &xTaskReadBatteryHandle
     ,  ARDUINO_RUNNING_CORE);
   xTaskCreatePinnedToCore(
+    TaskWifi
+    ,  "TaskWifi"   // A name just for humans
+    ,  4024  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  &xTaskWifiHandle
+    ,  ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(
     TaskReadAccel
     ,  "TaskReadAccel"   // A name just for humans
     ,  4024  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
-    ,  configMAX_PRIORITIES - 5 // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  3 // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &xTaskReadAccelHandle
     ,  ARDUINO_RUNNING_CORE);
   xTaskCreatePinnedToCore(
@@ -106,15 +121,15 @@ void setup() {
     ,  "TaskUpdateDisplay"   // A name just for humans
     ,  10000  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
-    ,  configMAX_PRIORITIES - 9  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  NULL
+    ,  3  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  &xTaskUpdateDisplayHandle
     ,  ARDUINO_RUNNING_CORE);
   xTaskCreatePinnedToCore(
     TaskUpdateStepCount
     ,  "TaskUpdateStepCount"   // A name just for humans
     ,  8024  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
-    ,  configMAX_PRIORITIES - 7 // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  3 // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &xTaskUpdateStepCountHandle
     ,  ARDUINO_RUNNING_CORE);
 }
@@ -127,10 +142,15 @@ void loop() {
     Serial.print("TICKS: ");
     Serial.println(xTaskGetTickCount());
     last_ticks = tick_count;
-    xSemaphoreGive(xSemaphore);
   }
 
 
+}
+
+void TaskWifi( void *pvParameters ) {
+  for (;;) {
+    vTaskDelay(5000);
+  }
 }
 
 int batteryLevel = 0; // between 0 and 100, 0 is unknown
@@ -142,8 +162,6 @@ void TaskReadBattery( void *pvParameters ) {
   {
     vTaskDelay(taskDelay);  // one tick delay (15ms) in between reads for stability
     Serial.println("Reading battery");
-    boolean has_sema = xSemaphoreTake(xSemaphore, taskDelay / 2);
-    if (!has_sema) continue;
     int value = analogRead(PIN_BATTERY_ADC);
     float voltage = (value / 4095.0) * 2 * 3.3 * 1.1;
     batteryLevel = map(voltage, low_voltage, high_voltage, 1, 100);
@@ -153,7 +171,6 @@ void TaskReadBattery( void *pvParameters ) {
     Serial.print("\tBattery level");
     Serial.print(batteryLevel);
     Serial.println();
-    xSemaphoreGive(xSemaphore);
     digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level);
     vTaskDelay(taskDelay);  // one tick delay (15ms) in between reads for stability
     digitalWrite(LED_BUILTIN, LOW);    // turn the LED off by making the voltage LOW
@@ -216,14 +233,11 @@ void TaskUpdateStepCount( void *pvParameters ) {
     vTaskDelayUntil(&xLastWakeTime, task_delay_rate);
     xLastWakeTime = xTaskGetTickCount();
 
-    boolean has_sema = xSemaphoreTake(xSemaphore, task_delay_rate / 2);
-    if (!has_sema) continue;
     Serial.print("StepCount:");
     Serial.println(accel_data.size());
     stepCount += 1;
     // don't bother updating the step count if we don't have enough data
     if (accel_data.size() < MAX_ACCEL_SAMPLES_PER_SECOND) {
-      xSemaphoreGive(xSemaphore);
       continue;
     }
 
@@ -235,37 +249,7 @@ void TaskUpdateStepCount( void *pvParameters ) {
     for (int i = 0; i < buffer_size; i++) {
       accel_data.pop();
     }
-    xSemaphoreGive(xSemaphore);
   }
-}
-
-void SuspendAllTasks(TaskHandle_t curr_task) {
-  Serial.println("Resume SUSPEND");
-  if (curr_task != xTaskReadAccelHandle) {
-    vTaskSuspend(xTaskReadAccelHandle);
-  }
-  if (curr_task != xTaskUpdateStepCountHandle) {
-    vTaskSuspend(xTaskUpdateStepCountHandle);
-  }
-  //xTaskReadBatteryHandle
-  if (curr_task != xTaskReadBatteryHandle) {
-    vTaskSuspend(xTaskReadBatteryHandle);
-  }
-}
-void ResumeAllTasks(TaskHandle_t curr_task) {
-  Serial.println("Resume START");
-  if (curr_task != xTaskReadAccelHandle) {
-    vTaskResume(xTaskReadAccelHandle);
-  }
-  //xTaskUpdateStepCountHandle
-  if (curr_task != xTaskUpdateStepCountHandle) {
-    vTaskResume(xTaskUpdateStepCountHandle);
-  }
-  //xTaskReadBatteryHandle
-  if (curr_task != xTaskReadBatteryHandle) {
-    vTaskResume(xTaskReadBatteryHandle);
-  }
-  Serial.println("Resume END");
 }
 
 void TaskUpdateDisplay (void *pvParameters ) {
@@ -297,10 +281,6 @@ void TaskUpdateDisplay (void *pvParameters ) {
       Serial.println("- skipped");
       continue;
     }
-    boolean has_sema = xSemaphoreTake(xSemaphore, taskDelay / 2);
-    if (!has_sema) continue;
-    SuspendAllTasks(curr_task);
-
     prev_hash = new_hash;
     display.clearDisplay();
     display.setTextSize(1);      // Normal 1:1 pixel scale
@@ -343,7 +323,5 @@ void TaskUpdateDisplay (void *pvParameters ) {
     Serial.print("\tDisplay");
     display.display();
     Serial.println("END");
-    xSemaphoreGive(xSemaphore);
-    ResumeAllTasks(curr_task);
   }
 }
