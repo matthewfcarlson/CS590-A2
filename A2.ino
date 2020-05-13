@@ -62,7 +62,7 @@ void setup() {
     //imu.setDataRate(LIS3DH_DATARATE_POWERDOWN); // by default, we power down
     imu.setDataRate(LIS3DH_DATARATE_100_HZ);
     imu.setFifoMode(LIS3DH_FIFO_MODE);
-    imu.setClick(1, 100);
+    imu.setClick(1, 120); // single click, threshold 110
     accel_started = true;
   }
   else {
