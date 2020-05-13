@@ -47,6 +47,12 @@ unsigned int stepCount = 0;
 unsigned short batteryLevel = 0; // between 0 and 100, 0 is unknown
 int happiness = 100; // Max of -100 to 100
 
+// we get an unhappy every second there isn't a step
+const int angry = -100; // once you get below this, you're in for a ride
+const int happy = 100; // once you get above this, it's as happy as can be
+const int max_happy = 200; // don't change happy once it's above this or below negative this
+
+
 void setup() {
   Serial.begin(115200);
 
@@ -211,12 +217,6 @@ void TaskReadAccel( void *pvParameters ) {
   Serial.println();
 #endif
 }
-
-// we get an unhappy every second there isn't a step
-const int angry = -100; // once you get below this, you're in for a ride
-const int happy = 100; // once you get above this, it's as happy as can be
-const int max_happy = 200; // don't change happy once it's above this or below negative this
-
 void TaskUpdateStepCount( void *pvParameters ) {
   // I've implemented enough convolution in my lifetime (EE Signal processing)
   // I'm just going to go the easy way
