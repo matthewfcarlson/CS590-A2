@@ -9,10 +9,13 @@
 #include <Adafruit_SSD1306.h>
 #include "config.h"
 #include "task.h"
+#define DEBUG 0
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 #define MAX_ACCEL_SAMPLES_PER_SECOND 100 // We're assuming max of 60hz
+const short anger = -50; // once you get below this, you're in for a ride
+const short happy = 50; // once you get above this, it's as happy as can be
 
 // PIN declerations
 #define PIN_BATTERY_ADC A13
@@ -41,6 +44,7 @@ void TaskWifi( void *pvParameters );
 // Common data
 unsigned int stepCount = 92;
 unsigned short batteryLevel = 0; // between 0 and 100, 0 is unknown
+short happiness = 10; // Max of -100 to 100
 
 void setup() {
   Serial.begin(115200);
@@ -60,9 +64,11 @@ void setup() {
     Serial.println("Started Gyro");
     imu.setRange(LIS3DH_RANGE_2_G);   // 2, 4, 8 or 16 G!
     //imu.setDataRate(LIS3DH_DATARATE_POWERDOWN); // by default, we power down
+    imu.setFifoMode(LIS3DH_FIFO_BYPASS);
     imu.setDataRate(LIS3DH_DATARATE_100_HZ);
-    imu.setFifoMode(LIS3DH_FIFO_MODE);
     imu.setClick(1, 120); // single click, threshold 110
+    imu.setFifoMode(LIS3DH_FIFO_STREAM);
+    imu.setDataRate(LIS3DH_DATARATE_100_HZ);
     accel_started = true;
   }
   else {
@@ -87,24 +93,29 @@ void loop() {
       // go to low power mode for a second
       TickType_t ticks = GetTicksUntilNextReadyTask();
       if (ticks == 0) {
+#if DEBUG
         Serial.print("We have no tasks@");
         Serial.print(xTaskGetTickCount());
         Serial.println();
+#endif
         vTaskDelay(1);
         // Go into deep sleep?
       }
       else if (ticks > 1) {
+#if DEBUG
         Serial.print("\tMain Loop Sleeping for ");
         Serial.println(ticks);
+#endif
         vTaskDelay(ticks);
       }
       continue;
     }
+#if DEBUG
     Serial.print("Executing @");
     Serial.print(xTaskGetTickCount());
     Serial.print("->");
     PrintTask(task);
-
+#endif
     // Execute the task that was picked
     task->function(NULL);
   }
@@ -142,31 +153,35 @@ void TaskReadBattery( void *pvParameters ) {
   const float high_voltage = 4.3;
 
   SleepFor(battery_taskDelay);  // one tick delay (15ms) in between reads for stability
-  Serial.println("Reading battery");
+
   int value = analogRead(PIN_BATTERY_ADC);
   float voltage = (value / 4095.0) * 2 * 3.3 * 1.1;
   batteryLevel = map(voltage, low_voltage, high_voltage, 1, 100);
+#if DEBUG
+  Serial.println("Reading battery");
   Serial.print(value);
   Serial.print("\t volts:");
   Serial.print(voltage);
   Serial.print("\tBattery level");
   Serial.print(batteryLevel);
   Serial.println();
-
+#endif
 }
 
 void TaskReadAccel( void *pvParameters ) {
   static unsigned int accel_task_read_fruitless = 0;
   unsigned int accel_task_count_read = 0;
   // we're going to shoot for 15 samples each time
-  static unsigned int accel_task_delay_rate = 1000 / MAX_ACCEL_SAMPLES_PER_SECOND * 15; 
+  static unsigned int accel_task_delay_rate = 1000 / MAX_ACCEL_SAMPLES_PER_SECOND * 15;
   SleepFor(accel_task_delay_rate); // This won't sleep until we exit
   if (!accel_started || !imu.haveNewData()) {
     accel_task_read_fruitless ++;
     return;
   }
-  Serial.print("ReadAccel");
+#if DEBUG
+  Serial.print("ReadAccel ");
   Serial.print(accel_data.size());
+#endif
 
   if (accel_task_read_fruitless > 0) accel_task_delay_rate ++; // adjust our tick rate as needed
   accel_task_read_fruitless = 0;
@@ -182,9 +197,11 @@ void TaskReadAccel( void *pvParameters ) {
   if (imu.getClick()) {
     stepCount ++;
   }
+#if DEBUG
   Serial.print("\t");
   Serial.print(accel_task_count_read);
   Serial.println();
+#endif
 }
 
 
@@ -198,8 +215,10 @@ void TaskUpdateStepCount( void *pvParameters ) {
   int buffer_size = accel_data.size();
   if (buffer_size > MAX_ACCEL_SAMPLES_PER_SECOND * 1.5 && stepcountask_delay_rate > 5) stepcountask_delay_rate--;
   // TODO: figure out if we aren't moving enough- turn ourselves off if we are
+#if DEBUG
   Serial.print("TaskUpdateStepCount: ");
   Serial.println(buffer_size);
+#endif
   for (int i = 0; i < buffer_size; i++) {
     accel_data.pop();
   }
@@ -211,9 +230,10 @@ void TaskUpdateDisplay (void *pvParameters ) {
 
   SleepFor(display_task_delay); // This won't sleep until we exit
   int new_hash = (batteryLevel + 1) * (stepCount + 1);
+#if DEBUG
   Serial.print("TaskUpdateDisplay");
+#endif
   if (new_hash == display_prev_hash) {
-    Serial.println("- skipped");
     return;
   }
   display_prev_hash = new_hash;
@@ -241,16 +261,14 @@ void TaskUpdateDisplay (void *pvParameters ) {
   char step_count_text[5];
   memset(step_count_text, ' ', 5); // make sure to zero everything to zero?
   unsigned int temp_step_count = stepCount > 9999 ? 9999 : stepCount; // we max out at 9999
-  
+
   if (!accel_started) sprintf(step_count_text, "NONE");
   else if (temp_step_count > 99 && temp_step_count < 1000) {
     itoa(temp_step_count, &step_count_text[1], 10);
     step_count_text[0] = '0';
   }
   else itoa(temp_step_count, step_count_text, 10);
-  
-  Serial.print("\tStep text: ");
-  for (int i = 0; i < 4; i++) Serial.print(step_count_text[i]);
+
   display.setTextSize(step_count_text_size + 1);
   display.getTextBounds("5", 0, 0, &x, &y, &w, &h);
   int16_t step_count_spacing_x = (step_count_box_w - (w * 2)) / 4;
@@ -267,9 +285,9 @@ void TaskUpdateDisplay (void *pvParameters ) {
   display.write(step_count_text[3]);
 
   // Draw the face
-  display.drawRect(15,15, 10, 20, SSD1306_WHITE);
-  display.drawRect(30,15, 10, 20, SSD1306_WHITE);
-  display.drawLine(17, 50, 38, 50, SSD1306_WHITE),
+  display.drawRect(15, 15, 10, 20, SSD1306_WHITE);
+  display.drawRect(30, 15, 10, 20, SSD1306_WHITE);
+  display.drawLine(17, 50, 38, 50, SSD1306_WHITE);
 
   /*display.getTextBounds(step_count_text, 0, 0, &x, &y, &w, &h); // the longest string
     Serial.print("\t X,Y: ");
@@ -277,8 +295,6 @@ void TaskUpdateDisplay (void *pvParameters ) {
     Serial.print(step_count_box_y + (h / 2));
     display.print(step_count_text);*/
 
-  // Make sure to put it out to the display
-  Serial.print("\tDisplay");
   display.display();
   Serial.println("END");
 
